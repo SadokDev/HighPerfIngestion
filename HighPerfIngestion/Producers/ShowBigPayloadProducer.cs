@@ -9,22 +9,27 @@ public sealed class SlowBigPayloadProducer : ProducerBase
 
     public override async Task RunAsync(Func<Event, ValueTask> onEventAsync, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            // generate a heavy payload (~ several KB)
-            var bigPayload = new string('X', 5000);
+            while (!ct.IsCancellationRequested)
+            {
+                var bigPayload = new string('X', 5000);
 
-            var ev = new Event(
-                id: Guid.NewGuid(),
-                timestamp: DateTime.UtcNow,
-                payload: bigPayload,
-                type: "big"
-            );
+                var ev = new Event(
+                    id: Guid.NewGuid(),
+                    timestamp: DateTime.UtcNow,
+                    payload: bigPayload,
+                    type: "big"
+                );
 
-            await onEventAsync(ev);
+                await onEventAsync(ev);
 
-            // Slow producer: 100ms pause
-            await Task.Delay(100, ct);
+                await Task.Delay(100, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected shutdown
         }
     }
 }

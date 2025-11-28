@@ -10,19 +10,23 @@ public sealed class BurstProducer : ProducerBase
 
     public override async Task RunAsync(Func<Event, ValueTask> onEventAsync, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            // Random burst size between 5 and 50
-            int burst = _rnd.Next(5, 50);
-
-            for (int i = 0; i < burst; i++)
+            while (!ct.IsCancellationRequested)
             {
-                var ev = CreateEvent("burst");
-                await onEventAsync(ev);
-            }
+                int burst = _rnd.Next(5, 50);
 
-            // Then rest for a random period
-            await Task.Delay(_rnd.Next(50, 200), ct);
+                for (int i = 0; i < burst; i++)
+                {
+                    await onEventAsync(CreateEvent("burst"));
+                }
+
+                await Task.Delay(_rnd.Next(50, 200), ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected shutdown
         }
     }
 }

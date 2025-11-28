@@ -8,13 +8,19 @@ public sealed class FastProducer : ProducerBase
     
     public override async Task RunAsync(Func<Event, ValueTask> onEventAsync, CancellationToken ct)
     {
-        while (!ct.IsCancellationRequested)
+        try
         {
-            var ev = CreateEvent("fast");
-            await onEventAsync(ev);
-            
-            // small sleep to avoid infinite tight spin
-            await Task.Delay(1, ct);
+            while (!ct.IsCancellationRequested)
+            {
+                var ev = CreateEvent("fast");
+                await onEventAsync(ev);
+
+                await Task.Delay(1, ct);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected shutdown
         }
     }
 }

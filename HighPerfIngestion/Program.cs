@@ -1,18 +1,32 @@
-﻿// See https://aka.ms/new-console-template for more information
-
-using HighPerfIngestion.Domain;
+﻿using HighPerfIngestion.Domain;
 using HighPerfIngestion.Producers;
+using HighPerfIngestion.Infrastructure;
 
-Console.WriteLine("Starting producers (Phase 2)...");
+Console.WriteLine("Starting Phase 3 — Channel buffer...");
+
 var cts = new CancellationTokenSource();
 
-ValueTask FakeSink(Event ev)
+bool useBounded = true;
+int capacity = 2000;
+
+// Create the shared channel
+var eventChannel = useBounded
+    ? new EventChannel(capacity)
+    : new EventChannel(null);
+
+// This is what producers call — pushing into channel
+async ValueTask OnEventAsync(Event ev)
 {
-    Console.WriteLine($"Produced: {ev.Type} at {ev.Timestamp:HH:mm:ss.fff}");
-    return ValueTask.CompletedTask;
+    try
+    {
+        await eventChannel.WriteAsync(ev, cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        // shutting down
+    }
 }
 
-// Create Producers
 var producers = new IEventProducer[]
 {
     new FastProducer(),
@@ -21,20 +35,24 @@ var producers = new IEventProducer[]
     new ErraticProducer()
 };
 
-// Start producers
+// Start producers on background tasks
 var tasks = producers
-    .Select(p => Task.Run(() => p.RunAsync(FakeSink, cts.Token)))
+    .Select(p => Task.Run(() => p.RunAsync(OnEventAsync, cts.Token)))
     .ToArray();
 
+Console.WriteLine("Producers started. Channel is filling.");
 Console.WriteLine("Press ENTER to stop...");
+
 Console.ReadLine();
+
 cts.Cancel();
+try
+{
+    await Task.WhenAll(tasks);
+}
+catch (OperationCanceledException)
+{
+    // Normal shutdown
+}
 
-
-await Task.WhenAll(tasks);
-
-
-
-
-/*var ev = Event.Create("Hello","test");
-Console.WriteLine($"Sample event created: {ev.Id} , {ev.Timestamp}, {ev.Payload}, {ev.Type}");*/
+Console.WriteLine("Phase 3 done.");

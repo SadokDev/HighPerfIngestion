@@ -1,8 +1,9 @@
 ﻿using HighPerfIngestion.Domain;
 using HighPerfIngestion.Producers;
 using HighPerfIngestion.Infrastructure;
+using HighPerfIngestion.Processing;   // <-- Needed for EventConsumer
 
-Console.WriteLine("Starting Phase 3 — Channel buffer...");
+Console.WriteLine("Starting Phase 3/4 — Channel + Consumer...");
 
 var cts = new CancellationTokenSource();
 
@@ -27,6 +28,16 @@ async ValueTask OnEventAsync(Event ev)
     }
 }
 
+// Pick your workload type here for Phase 4
+var workloadType = WorkloadType.Mixed;   // <-- You can change: CpuHeavy / IoBound / Mixed
+
+// Create the consumer
+var consumer = new EventConsumer(eventChannel.Reader, workloadType);
+
+// Start consumer on a background task
+var consumerTask = Task.Run(() => consumer.StartAsync(cts.Token));
+
+// Create producers
 var producers = new IEventProducer[]
 {
     new FastProducer(),
@@ -35,24 +46,27 @@ var producers = new IEventProducer[]
     new ErraticProducer()
 };
 
-// Start producers on background tasks
-var tasks = producers
+// Start producers as background tasks
+var producerTasks = producers
     .Select(p => Task.Run(() => p.RunAsync(OnEventAsync, cts.Token)))
     .ToArray();
 
-Console.WriteLine("Producers started. Channel is filling.");
+Console.WriteLine("Producers + consumer started.");
 Console.WriteLine("Press ENTER to stop...");
 
 Console.ReadLine();
 
 cts.Cancel();
+
+// Shutdown sequence
 try
 {
-    await Task.WhenAll(tasks);
+    await Task.WhenAll(producerTasks);
+    await consumerTask;
 }
 catch (OperationCanceledException)
 {
     // Normal shutdown
 }
 
-Console.WriteLine("Phase 3 done.");
+Console.WriteLine("Phase 4 done.");

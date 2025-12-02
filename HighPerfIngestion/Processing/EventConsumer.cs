@@ -1,3 +1,4 @@
+using System.Diagnostics.Tracing;
 using System.Threading.Channels;
 using HighPerfIngestion.Domain;
 
@@ -12,11 +13,15 @@ public enum WorkloadType
 public class EventConsumer
 {
     private readonly ChannelReader<Event>  _reader;
+    // NEW: Injected processor
+    private readonly EventProcessor _processor;
+    
     private readonly WorkloadType _workloadType;
-    public EventConsumer(ChannelReader<Event> reader, WorkloadType workloadType)
+    public EventConsumer(ChannelReader<Event> reader, WorkloadType workloadType, EventProcessor processor)
     {
         _reader = reader;
         _workloadType = workloadType;
+        _processor = processor;
     }
 
     /*Wait for data
@@ -33,20 +38,7 @@ public class EventConsumer
     
     private async ValueTask ProcessEventAsync(Event evt, CancellationToken cancellationToken)
     {
-        switch (_workloadType)
-        {
-            case WorkloadType.CpuHeavy:
-                await SimulateCpuWorkAsync(evt, cancellationToken);
-                break;
-
-            case WorkloadType.IoBound:
-                await SimulateIoWorkAsync(evt, cancellationToken);
-                break;
-
-            case WorkloadType.Mixed:
-                await SimulateMixedWorkAsync(evt, cancellationToken);
-                break;
-        }
+        await _processor.ProcessAsync(evt, cancellationToken);
     }
 
     private async ValueTask SimulateMixedWorkAsync(Event evt, CancellationToken cancellationToken)

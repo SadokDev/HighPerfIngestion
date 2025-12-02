@@ -1,19 +1,27 @@
-﻿using HighPerfIngestion.Domain;
+﻿using System.Threading.Channels;
+using HighPerfIngestion.Domain;
+using HighPerfIngestion.Processing;
 using HighPerfIngestion.Producers;
 using HighPerfIngestion.Infrastructure;
-using HighPerfIngestion.Processing;   // <-- Needed for EventConsumer
 
-Console.WriteLine("Starting Phase 3/4 — Channel + Consumer...");
+Console.WriteLine("Starting Phase 5.3 Burst Test — Channel + Consumer + EventProcessor + 10k events...");
 
 var cts = new CancellationTokenSource();
 
 bool useBounded = true;
 int capacity = 2000;
 
-// Create the shared channel
+// Shared channel
 var eventChannel = useBounded
     ? new EventChannel(capacity)
     : new EventChannel(null);
+
+// Create processor
+var processor = new EventProcessor();
+
+// Consumer that uses the processor
+var consumer = new EventConsumer(eventChannel.Reader, WorkloadType.Mixed, processor);
+var consumerTask = Task.Run(() => consumer.StartAsync(cts.Token));
 
 // This is what producers call — pushing into channel
 async ValueTask OnEventAsync(Event ev)
@@ -28,15 +36,6 @@ async ValueTask OnEventAsync(Event ev)
     }
 }
 
-// Pick your workload type here for Phase 4
-var workloadType = WorkloadType.Mixed;   // <-- You can change: CpuHeavy / IoBound / Mixed
-
-// Create the consumer
-var consumer = new EventConsumer(eventChannel.Reader, workloadType);
-
-// Start consumer on a background task
-var consumerTask = Task.Run(() => consumer.StartAsync(cts.Token));
-
 // Create producers
 var producers = new IEventProducer[]
 {
@@ -46,14 +45,27 @@ var producers = new IEventProducer[]
     new ErraticProducer()
 };
 
-// Start producers as background tasks
+// Start producers
 var producerTasks = producers
     .Select(p => Task.Run(() => p.RunAsync(OnEventAsync, cts.Token)))
     .ToArray();
 
-Console.WriteLine("Producers + consumer started.");
-Console.WriteLine("Press ENTER to stop...");
+// --- Burst 10k events ---
+int burstEvents = 10_000;
+Console.WriteLine($"Sending {burstEvents} events for burst test...");
+for (int i = 0; i < burstEvents; i++)
+{
+    await OnEventAsync(new Event(
+        Guid.NewGuid(),
+        DateTime.UtcNow,
+        "dummy-payload",
+        "burst-test"
+    ));
+}
+Console.WriteLine("Burst events sent.");
 
+// Keep producers/consumer running for a while to observe metrics
+Console.WriteLine("Producers + consumer running. Press ENTER to stop...");
 Console.ReadLine();
 
 cts.Cancel();
@@ -69,4 +81,4 @@ catch (OperationCanceledException)
     // Normal shutdown
 }
 
-Console.WriteLine("Phase 4 done.");
+Console.WriteLine("Burst test done.");

@@ -4,26 +4,40 @@ using HighPerfIngestion.Processing;
 using HighPerfIngestion.Producers;
 using HighPerfIngestion.Infrastructure;
 
-Console.WriteLine("Starting Phase 5.3 Burst Test — Channel + Consumer + EventProcessor + 10k events...");
+Console.WriteLine("Starting Phase 6 — Thread Pool & Starvation Behavior Test...");
 
 var cts = new CancellationTokenSource();
+
+// ----------------------------
+// CHANNEL CONFIG
+// ----------------------------
 
 bool useBounded = true;
 int capacity = 2000;
 
-// Shared channel
 var eventChannel = useBounded
     ? new EventChannel(capacity)
     : new EventChannel(null);
 
-// Create processor
+// ----------------------------
+// PROCESSOR & CONSUMER
+// ----------------------------
+
 var processor = new EventProcessor();
 
-// Consumer that uses the processor
-var consumer = new EventConsumer(eventChannel.Reader, WorkloadType.Mixed, processor);
+var consumer = new EventConsumer(eventChannel.Reader, WorkloadType.Mixed, processor)
+{
+    EnableArtificialSlowness = true,
+    ArtificialDelayMs = 3,
+    EnableRandomFreeze = true
+};
+
 var consumerTask = Task.Run(() => consumer.StartAsync(cts.Token));
 
-// This is what producers call — pushing into channel
+// ----------------------------
+// PRODUCERS + WRITE HOOK
+// ----------------------------
+
 async ValueTask OnEventAsync(Event ev)
 {
     try
@@ -36,7 +50,6 @@ async ValueTask OnEventAsync(Event ev)
     }
 }
 
-// Create producers
 var producers = new IEventProducer[]
 {
     new FastProducer(),
@@ -45,40 +58,69 @@ var producers = new IEventProducer[]
     new ErraticProducer()
 };
 
-// Start producers
 var producerTasks = producers
     .Select(p => Task.Run(() => p.RunAsync(OnEventAsync, cts.Token)))
     .ToArray();
 
-// --- Burst 10k events ---
+// ----------------------------
+// MONITOR TASK (Phase 6)
+// ----------------------------
+
+var monitorTask = Task.Run((Func<Task>)(async () =>
+{
+    while (!cts.Token.IsCancellationRequested)
+    {
+        ThreadPool.GetAvailableThreads(out int aw, out int ai);
+        ThreadPool.GetMaxThreads(out int mw, out int mi);
+
+        Console.WriteLine(
+            $"[Monitor] ApproxChannelLength={eventChannel.ApproximateCount} | ThreadPool Workers {aw}/{mw}"
+        );
+
+        await Task.Delay(1000, cts.Token);
+    }
+}));
+
+// ----------------------------
+// BURST TEST (10,000 events)
+// ----------------------------
+
 int burstEvents = 10_000;
 Console.WriteLine($"Sending {burstEvents} events for burst test...");
+
 for (int i = 0; i < burstEvents; i++)
 {
     await OnEventAsync(new Event(
         Guid.NewGuid(),
         DateTime.UtcNow,
         "dummy-payload",
-        "burst-test"
-    ));
+        "burst-test"));
 }
+
 Console.WriteLine("Burst events sent.");
 
-// Keep producers/consumer running for a while to observe metrics
-Console.WriteLine("Producers + consumer running. Press ENTER to stop...");
+// ----------------------------
+// RUNTIME WINDOW
+// ----------------------------
+
+Console.WriteLine("Producers + consumer running (Phase 6). Press ENTER to stop...");
 Console.ReadLine();
 
 cts.Cancel();
 
-// Shutdown sequence
+// ----------------------------
+// SHUTDOWN
+// ----------------------------
+
 try
 {
     await Task.WhenAll(producerTasks);
     await consumerTask;
+    await monitorTask;
 }
 catch (OperationCanceledException)
 {
-    // Normal shutdown
+    // normal shutdown
 }
 
-Console.WriteLine("Burst test done.");
+Console.WriteLine("Phase 6 complete.");

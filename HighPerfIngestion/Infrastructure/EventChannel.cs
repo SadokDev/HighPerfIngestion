@@ -1,31 +1,58 @@
-using HighPerfIngestion.Domain;
 using System.Threading.Channels;
+using HighPerfIngestion.Domain;
 
 namespace HighPerfIngestion.Infrastructure;
 
-public sealed class EventChannel
+public class EventChannel
 {
     private readonly Channel<Event> _channel;
-    public ChannelReader<Event> Reader => _channel.Reader;
-    public ChannelWriter<Event> Writer => _channel.Writer;
 
-    public EventChannel(int? capacity = null)
+    // Phase 6: approximate backlog counter (write-only)
+    private int _count;
+    public int ApproximateCount => Volatile.Read(ref _count);
+
+    public ChannelWriter<Event> Writer => _channel.Writer;
+    public ChannelReader<Event> Reader => _channel.Reader;
+
+    public EventChannel(int? capacity)
     {
-        _channel =
-            capacity is null
-                ? Channel.CreateUnbounded<Event>(new UnboundedChannelOptions
-                {
-                    SingleReader = true,
-                    SingleWriter = false
-                })
-                : Channel.CreateBounded<Event>(new BoundedChannelOptions(capacity.Value)
-                {
-                    SingleReader = true,
-                    SingleWriter = false,
-                    FullMode = BoundedChannelFullMode.Wait // natural backpressure
-                });
+        if (capacity.HasValue)
+        {
+            var options = new BoundedChannelOptions(capacity.Value)
+            {
+                SingleWriter = false,
+                SingleReader = false,
+                FullMode = BoundedChannelFullMode.Wait // producers block when full
+            };
+
+            _channel = Channel.CreateBounded<Event>(options);
+        }
+        else
+        {
+            _channel = Channel.CreateUnbounded<Event>();
+        }
     }
 
-    public ValueTask WriteAsync(Event ev, CancellationToken ct) =>
-        Writer.WriteAsync(ev, ct);
+    /// <summary>
+    /// Writes an event to the channel and increments the approximate count.
+    /// </summary>
+    public async ValueTask WriteAsync(Event ev, CancellationToken ct)
+    {
+        await _channel.Writer.WriteAsync(ev, ct);
+        Interlocked.Increment(ref _count);
+    }
+
+    /// <summary>
+    /// TryWrite variant — increments count only on success.
+    /// </summary>
+    public bool TryWrite(Event ev)
+    {
+        if (_channel.Writer.TryWrite(ev))
+        {
+            Interlocked.Increment(ref _count);
+            return true;
+        }
+
+        return false;
+    }
 }

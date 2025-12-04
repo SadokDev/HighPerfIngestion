@@ -1,4 +1,3 @@
-using System.Diagnostics.Tracing;
 using System.Threading.Channels;
 using HighPerfIngestion.Domain;
 
@@ -10,102 +9,80 @@ public enum WorkloadType
     IoBound,
     Mixed
 }
+
 public class EventConsumer
 {
-    private readonly ChannelReader<Event>  _reader;
-    // NEW: Injected processor
+    private readonly ChannelReader<Event> _reader;
     private readonly EventProcessor _processor;
-    
     private readonly WorkloadType _workloadType;
-    public EventConsumer(ChannelReader<Event> reader, WorkloadType workloadType, EventProcessor processor)
+
+    // ---- Phase 6 knobs ----
+    public bool EnableArtificialSlowness { get; set; } = true;
+    public bool EnableRandomFreeze { get; set; } = true;
+    public int ArtificialDelayMs { get; set; } = 3;
+
+    private long _processedCount = 0;
+
+    public EventConsumer(
+        ChannelReader<Event> reader,
+        WorkloadType workloadType,
+        EventProcessor processor)
     {
         _reader = reader;
         _workloadType = workloadType;
         _processor = processor;
     }
 
-    /*Wait for data
-        Read events one by one
-    Stop when cancellation requested*/
     public async Task StartAsync(CancellationToken cancellationToken)
     {
-       await foreach (var evt in _reader.ReadAllAsync(cancellationToken))
-       {
-           //_ = evt;
-           await ProcessEventAsync(evt, cancellationToken);
-       }
-    }
-    
-    private async ValueTask ProcessEventAsync(Event evt, CancellationToken cancellationToken)
-    {
-        await _processor.ProcessAsync(evt, cancellationToken);
-    }
+        Console.WriteLine("[Consumer] Started.");
 
-    private async ValueTask SimulateMixedWorkAsync(Event evt, CancellationToken cancellationToken)
-    {
-        int roll = Random.Shared.Next(0, 100);
-        // 70%: fast path (light CPU)
-        if (roll < 70)
-        {
-            // small CPU burn
-            Span<byte> input = stackalloc byte[16];
-            evt.Id.TryWriteBytes(input);
-            using var sha = System.Security.Cryptography.SHA256.Create(); 
-            sha.TryComputeHash(input, stackalloc byte[32], out _);
-
-            return;
-        }
-        
-        // 20%: I/O-like async path
-        if (roll < 90)
-        {
-            int simulatedLatencyMs = Random.Shared.Next(5, 20);
-            await Task.Delay(simulatedLatencyMs, cancellationToken);
-            return;
-        }
-
-        // 10%: heavy CPU path
-        using (var sha = System.Security.Cryptography.SHA256.Create())
-        {
-            Span<byte> input = stackalloc byte[16];
-            evt.Id.TryWriteBytes(input);
-
-            for (int i = 0; i < 300; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                sha.TryComputeHash(input, stackalloc byte[32], out _);
-            }
-        }
-    }
-
-    private async ValueTask SimulateIoWorkAsync(Event evt, CancellationToken cancellationToken)
-    {
-        // We simulate variable I/O latency.
-        // Typical real-world latency range: 5ms–25ms
-        int simulatedLatencyMs = Random.Shared.Next(5, 25);
-        await Task.Delay(simulatedLatencyMs, cancellationToken);
-        // This is pure async I/O simulation.
-        // No CPU burn, no thread blocking.
-    }
-
-    private ValueTask SimulateCpuWorkAsync(Event evt, CancellationToken cancellationToken)
-    {
-        // CPU-heavy simulation: compute a SHA256 hash repeatedly
-        // This burns real CPU cycles and blocks the consumer thread.
-        
-        using var sha = System.Security.Cryptography.SHA256.Create();
-        //Convert event ID to bytes( minimum allocation)
-
-        Span<byte> input = stackalloc byte[16];
-        evt.Id.TryWriteBytes(input);
-        
-        for (int i = 0; i < 500; i++)
+        await foreach (var evt in _reader.ReadAllAsync(cancellationToken))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            sha.TryComputeHash(input, stackalloc byte[32], out _);
+
+            // Your normal per-event processing (Phase 5 fast-path/slow-path).
+            await ProcessEventAsync(evt, cancellationToken);
+
+            // ---- Phase 6: make consumer intentionally slower ----
+            if (EnableArtificialSlowness)
+            {
+                // Small async delay to reduce throughput and create pressure
+                await Task.Delay(ArtificialDelayMs, cancellationToken);
+
+                // ~0.02% chance (1 in 5000) to simulate a GC pause or lock stall
+                if (EnableRandomFreeze && Random.Shared.Next(0, 5000) == 0)
+                {
+                    Console.WriteLine("[Consumer] Simulating random freeze (250–600ms)...");
+                    await Task.Delay(Random.Shared.Next(250, 600), cancellationToken);
+                }
+            }
+
+            // ---- Phase 6: Diagnostics every 2000 events ----
+            if (Interlocked.Increment(ref _processedCount) % 2000 == 0)
+            {
+                LogThreadPoolState();
+            }
         }
-        
-        // CPU work is synchronous, so return a completed ValueTask
-        return ValueTask.CompletedTask;
+
+        Console.WriteLine("[Consumer] Stopped.");
+    }
+
+    private async ValueTask ProcessEventAsync(Event evt, CancellationToken ct)
+    {
+        // This uses your fast/slow path ValueTask logic from EventProcessor
+        await _processor.ProcessAsync(evt, ct);
+    }
+
+    // ---- Phase 6 diagnostics ----
+    private void LogThreadPoolState()
+    {
+        ThreadPool.GetAvailableThreads(out int availableWorkers, out int availableIO);
+        ThreadPool.GetMaxThreads(out int maxWorkers, out int maxIO);
+        ThreadPool.GetMinThreads(out int minWorkers, out int minIO);
+
+        Console.WriteLine(
+            $"[ThreadPool] Worker: {availableWorkers}/{maxWorkers} | Min={minWorkers} | IO: {availableIO}/{maxIO}"
+        );
     }
 }

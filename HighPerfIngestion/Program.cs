@@ -3,6 +3,7 @@ using HighPerfIngestion.Domain;
 using HighPerfIngestion.Processing;
 using HighPerfIngestion.Producers;
 using HighPerfIngestion.Infrastructure;
+using HighPerfIngestion.Metrics;
 
 Console.WriteLine("Starting Phase 6 — Thread Pool & Starvation Behavior Test...");
 
@@ -24,8 +25,8 @@ var eventChannel = useBounded
 // ----------------------------
 
 var processor = new EventProcessor();
-
-var consumer = new EventConsumer(eventChannel.Reader, WorkloadType.Mixed, processor)
+var metrics = new IngestionMetrics();
+var consumer = new EventConsumer(eventChannel.Reader, WorkloadType.Mixed, processor, metrics)
 {
     EnableArtificialSlowness = true,
     ArtificialDelayMs = 3,
@@ -40,6 +41,7 @@ var consumerTask = Task.Run(() => consumer.StartAsync(cts.Token));
 
 async ValueTask OnEventAsync(Event ev)
 {
+    Interlocked.Increment(ref metrics.ProducedTotal);
     try
     {
         await eventChannel.WriteAsync(ev, cts.Token);
@@ -81,6 +83,41 @@ var monitorTask = Task.Run((Func<Task>)(async () =>
     }
 }));
 
+var metricsTask = Task.Run(async () =>
+{
+    long lastProduced = 0;
+    long lastConsumed = 0;
+
+    while (!cts.Token.IsCancellationRequested)
+    {
+        await Task.Delay(1000, cts.Token);
+
+        long produced = Volatile.Read(ref metrics.ProducedTotal);
+        long consumed = Volatile.Read(ref metrics.ConsumedTotal);
+
+        long producedDelta = produced - lastProduced;
+        long consumedDelta = consumed - lastConsumed;
+
+        lastProduced = produced;
+        lastConsumed = consumed;
+
+        double avgTicks = consumed > 0
+            ? (double)metrics.TotalProcessingTicks / consumed
+            : 0;
+
+        Console.WriteLine(
+            $"[Metrics] " +
+            $"Prod={producedDelta}/s | " +
+            $"Cons={consumedDelta}/s | " +
+            $"Backlog={eventChannel.ApproximateCount} | " +
+            $"Avg={avgTicks:F0} ticks | " +
+            $"Min={metrics.MinProcessingTicks} | " +
+            $"Max={metrics.MaxProcessingTicks}"
+        );
+    }
+});
+
+
 // ----------------------------
 // BURST TEST (10,000 events)
 // ----------------------------
@@ -117,6 +154,7 @@ try
     await Task.WhenAll(producerTasks);
     await consumerTask;
     await monitorTask;
+    await metricsTask;
 }
 catch (OperationCanceledException)
 {

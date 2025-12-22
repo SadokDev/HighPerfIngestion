@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Threading.Channels;
 using HighPerfIngestion.Domain;
+using HighPerfIngestion.Metrics;
 
 namespace HighPerfIngestion.Processing;
 
@@ -15,6 +17,7 @@ public class EventConsumer
     private readonly ChannelReader<Event> _reader;
     private readonly EventProcessor _processor;
     private readonly WorkloadType _workloadType;
+    private readonly IngestionMetrics _metrics;
 
     // ---- Phase 6 knobs ----
     public bool EnableArtificialSlowness { get; set; } = true;
@@ -26,11 +29,13 @@ public class EventConsumer
     public EventConsumer(
         ChannelReader<Event> reader,
         WorkloadType workloadType,
-        EventProcessor processor)
+        EventProcessor processor,
+        IngestionMetrics metrics)
     {
         _reader = reader;
         _workloadType = workloadType;
         _processor = processor;
+        _metrics = metrics;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken)
@@ -70,8 +75,13 @@ public class EventConsumer
 
     private async ValueTask ProcessEventAsync(Event evt, CancellationToken ct)
     {
-        // This uses your fast/slow path ValueTask logic from EventProcessor
+        long start = Stopwatch.GetTimestamp();
+
         await _processor.ProcessAsync(evt, ct);
+
+        long elapsed = Stopwatch.GetTimestamp() - start;
+
+        _metrics.RecordProcessing(elapsed);
     }
 
     // ---- Phase 6 diagnostics ----

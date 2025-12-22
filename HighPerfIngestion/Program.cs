@@ -116,6 +116,62 @@ var metricsTask = Task.Run(async () =>
         );
     }
 });
+// ----------------------------
+// PHASE 8: Experiment Runner
+// ----------------------------
+
+async Task RunExperimentAsync(
+    string experimentName,
+    int channelCapacity,
+    int consumerCount,
+    int burstEvents)
+{
+    Console.WriteLine($"--- {experimentName} --- Channel={channelCapacity}, Consumers={consumerCount}, Burst={burstEvents}");
+
+    using var ctsExp = new CancellationTokenSource();
+
+    var expChannel = new EventChannel(channelCapacity);
+    var processor = new EventProcessor();
+
+    var consumers = Enumerable.Range(0, consumerCount)
+        .Select(_ => new EventConsumer(expChannel.Reader, WorkloadType.Mixed, processor, metrics)
+        {
+            EnableArtificialSlowness = true,
+            ArtificialDelayMs = 3,
+            EnableRandomFreeze = true
+        })
+        .ToArray();
+
+    var consumerTasks = consumers
+        .Select(c => Task.Run(() => c.StartAsync(ctsExp.Token)))
+        .ToArray();
+
+    // Burst events
+    for (int i = 0; i < burstEvents; i++)
+    {
+        await OnEventAsync(new Event(
+            Guid.NewGuid(),
+            DateTime.UtcNow,
+            "dummy-payload",
+            experimentName));
+    }
+
+    Console.WriteLine("System running... Press ENTER to stop this experiment.");
+    Console.ReadLine();
+    ctsExp.Cancel();
+
+    try
+    {
+        await Task.WhenAll(consumerTasks);
+    }
+    catch (OperationCanceledException)
+    {
+        // normal shutdown
+    }
+
+    Console.WriteLine($"--- {experimentName} Complete ---\n");
+}
+
 
 
 // ----------------------------
@@ -140,10 +196,9 @@ Console.WriteLine("Burst events sent.");
 // RUNTIME WINDOW
 // ----------------------------
 
-Console.WriteLine("Producers + consumer running (Phase 6). Press ENTER to stop...");
-Console.ReadLine();
-
-cts.Cancel();
+await RunExperimentAsync("SmallChannel", channelCapacity: 100, consumerCount: 1, burstEvents: 10_000);
+await RunExperimentAsync("MediumChannel", channelCapacity: 2000, consumerCount: 1, burstEvents: 10_000);
+await RunExperimentAsync("LargeChannel", channelCapacity: 10_000, consumerCount: 1, burstEvents: 10_000);
 
 // ----------------------------
 // SHUTDOWN
